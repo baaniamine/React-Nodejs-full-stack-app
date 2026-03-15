@@ -1,0 +1,1686 @@
+                        TP : React + Node.js + MySQL
+
+
+
+1) Installation des outils:
+
+Avant de commencer, vérifier que les outils suivants sont installés :
+
+ 1. Installer Node.js : Node.js — Exécuter du JavaScript partout
+ 2. Vérifier l’installation : node -v , npm -v
+
+3) Création du projet
+
+1.1 Créer le dossier principal tp-auth : mkdir tp-auth
+
+1.2 Créer Backend dans le tp-auth : mkdir backend
+
+
+
+
+1.4 Installer les packages backend :
+
+       a . cd backend
+
+       b.Initialiser Node : npm init -y
+
+       c. Installer les dépendances nécessaires :
+
+        npm install express mysql2 cors dotenv bcrypt jsonwebtoken
+
+       npm install -D nodemon
+
+
+
+
+4) Création base de données MySQL :
+
+2.1 Dans MySQL c réer une base de données tp_auth
+
+2.2 Créer table users avec les champs :
+    id
+    name
+    email
+    password
+    created_at
+    age
+    cin
+
+3) Structure backend :
+
+ 1. Créer les dossiers :
+
+
+
+
+ 2. API à créer :
+
+a. dans le fichier backend/route/auth.js :
+
+Inscription utilisateur : POST /api/auth/signup
+
+Cette route permet de créer un nouvel utilisateur dans la base de données.
+
+Quand l'utilisateur remplit le formulaire Signup dans React, le frontend envoie une requête :
+
+
+
+
+Fonctions utilisées :
+
+    req.body
+    bcrypt.hash()
+    db.query()
+
+Étapes :
+
+ 1. récupérer name, email, password
+ 2. vérifier si email existe
+ 3. crypter mot de pass
+ 4. enregistrer utilisateur
+POST /api/auth/login sert à connecter un utilisateur.
+
+Étapes :
+
+ 1. Chercher utilisateur dans MySQL avec son email (db.query() / pool.query() + SELECT ...
+    WHERE email=?).
+ 2. Vérifier le mot de passe : comparer le password saisi avec password_hash stocké
+    (bcrypt.compare()).
+ 3. Créer un token JWT si tout est correct (jwt.sign()), puis renvoyer le token au frontend
+
+const router = require("express").Router();
+
+const bcrypt = require("bcrypt");
+
+const jwt = require("jsonwebtoken");
+
+const pool = require("../db");
+
+require("dotenv").config();
+
+
+
+
+/**
+
+* POST /api/auth/signup
+
+* Body: { name, email, password, age?, cin? }
+
+*/
+
+router.post("/signup", async (req, res) => {
+
+ try {
+
+  // 1) récupérer les données
+
+  const { name, email, password, age = null, cin = null } = req.body;
+
+
+
+
+  // 2) vérifier champs obligatoires
+
+  if (!name || !email || !password) {
+
+      return res.status(400).json({ message: "Missing required fields" });
+
+  }
+
+
+
+
+  // 3) vérifier si email existe déjà
+      const [existing] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
+
+      if (existing.length > 0) {
+
+          return res.status(409).json({ message: "Email already exists" });
+
+      }
+
+
+
+
+      // 4) crypter (hasher) le mot de passe
+
+      const password_hash = await bcrypt.hash(password, 10);
+
+
+
+
+      // 5) enregistrer l'utilisateur dans MySQL
+
+      const [result] = await pool.query(
+
+          "INSERT INTO users (name, email, password_hash, age, cin) VALUES (?, ?, ?, ?, ?)",
+
+          [name, email, password_hash, age, cin]
+
+      );
+
+
+
+
+      // 6) renvoyer réponse (sans mot de passe)
+
+      return res.status(201).json({
+
+          message: "User created successfully",
+
+          user: { id: result.insertId, name, email, age, cin },
+
+      });
+
+ } catch (err) {
+
+      return res.status(500).json({ message: "Server error" });
+
+ }
+
+});
+
+
+
+
+/**
+
+* POST /api/auth/login
+* Body: { email, password }
+
+*/
+
+router.post("/login", async (req, res) => {
+
+ try {
+
+  // 1) récupérer email + password
+
+  const { email, password } = req.body;
+
+
+
+
+  // vérifier champs
+
+  if (!email || !password) {
+
+      return res.status(400).json({ message: "Missing fields" });
+
+  }
+
+
+
+
+  // 2) chercher utilisateur dans MySQL
+
+  const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+
+  if (rows.length === 0) {
+
+      return res.status(401).json({ message: "Invalid credentials" });
+
+  }
+
+
+
+
+  const user = rows[0];
+
+
+
+
+  // 3) vérifier le mot de passe (compare password avec password_hash)
+
+  const ok = await bcrypt.compare(password, user.password_hash);
+
+  if (!ok) {
+
+      return res.status(401).json({ message: "Invalid credentials" });
+
+  }
+      // 4) créer token JWT
+
+      const token = jwt.sign(
+
+       { id: user.id, email: user.email },   // payload
+
+       process.env.JWT_SECRET,                // secret
+
+       { expiresIn: "2h" }             // durée
+
+      );
+
+
+
+
+      // 5) renvoyer token + infos user (sans password_hash)
+
+      return res.json({
+
+       token,
+
+       user: {
+
+            id: user.id,
+
+            name: user.name,
+
+            email: user.email,
+
+            age: user.age,
+
+            cin: user.cin,
+
+       },
+
+      });
+
+ } catch (err) {
+
+      return res.status(500).json({ message: "Server error" });
+
+ }
+
+});
+
+
+
+
+module.exports = router;
+
+b. dans le fichier backend/route/user.js
+
+Ce fichier contient les routes CRUD (Create/Read/Update/Delete) des utilisateurs.
+     GET /api/users : afficher la liste des utilisateurs (lecture)
+     PUT /api/users/:id : modifier un utilisateur par id
+     DELETE /api/users/:id : supprimer un utilisateur par id
+
+Ces routes sont protégées par le middleware auth :
+
+     il vérifie le token JWT (Authorization: Bearer <token>)
+     si token valide → next() → la route s’exécute
+     sinon → 401 Unauthorized
+
+const router = require("express").Router();
+
+const pool = require("../db");        // connexion MySQL
+
+const auth = require("../middleware/auth"); // middleware JWT
+
+
+
+
+const router = require("express").Router();
+
+
+
+
+// connexion à la base de données
+
+const pool = require("../db");
+
+
+
+
+// middleware pour vérifier le token JWT
+
+const auth = require("../middleware/auth");
+
+
+
+
+/*
+
+=================================================
+
+GET /api/users
+
+Afficher tous les utilisateurs
+
+=================================================
+
+*/
+
+router.get("/", auth, async (req, res) => {
+ try {
+
+
+
+
+      // récupérer tous les utilisateurs (sans password)
+
+      const [users] = await pool.query(
+
+       "SELECT id, name, email, age, cin, created_at FROM users"
+
+      );
+
+
+
+
+      // envoyer les données au frontend
+
+      res.json(users);
+
+
+
+
+ } catch (error) {
+
+
+
+
+      res.status(500).json({
+
+       message: "Server error"
+
+      });
+
+
+
+
+ }
+
+
+
+
+});
+
+
+
+
+/*
+
+=================================================
+
+PUT /api/users/:id
+
+Modifier un utilisateur
+
+=================================================
+*/
+
+router.put("/:id", auth, async (req, res) => {
+
+
+
+
+ try {
+
+
+
+
+     // récupérer l'id dans l'URL
+
+     const { id } = req.params;
+
+
+
+
+     // récupérer les nouvelles valeurs
+
+     const { name, email, age, cin } = req.body;
+
+
+
+
+     // requête SQL UPDATE
+
+     await pool.query(
+
+      "UPDATE users SET name=?, email=?, age=?, cin=? WHERE id=?",
+
+      [name, email, age, cin, id]
+
+     );
+
+
+
+
+     // récupérer utilisateur modifié
+
+     const [updatedUser] = await pool.query(
+
+      "SELECT id, name, email, age, cin FROM users WHERE id=?",
+
+      [id]
+
+     );
+
+
+
+
+     res.json(updatedUser[0]);
+
+
+
+
+ } catch (error) {
+      res.status(500).json({
+
+       message: "Server error"
+
+      });
+
+
+
+
+ }
+
+
+
+
+});
+
+
+
+
+/*
+
+=================================================
+
+DELETE /api/users/:id
+
+Supprimer un utilisateur
+
+=================================================
+
+*/
+
+router.delete("/:id", auth, async (req, res) => {
+
+
+
+
+ try {
+
+
+
+
+      // récupérer id
+
+      const { id } = req.params;
+
+
+
+
+      // supprimer utilisateur
+
+      await pool.query(
+
+       "DELETE FROM users WHERE id=?",
+       [id]
+
+      );
+
+
+
+
+      res.json({
+
+       message: "User deleted successfully"
+
+      });
+
+
+
+
+ } catch (error) {
+
+
+
+
+      res.status(500).json({
+
+       message: "Server error"
+
+      });
+
+
+
+
+ }
+
+
+
+
+});
+
+
+
+
+// exporter les routes
+
+module.exports = router;
+
+IMPORTANT : connecter la route dans backend/index.js
+
+Dans backend/index.js, tu dois avoir : app.use("/api/users", userRoutes);
+
+c.backend/middleware/auth.js:
+
+Ce middleware sert à protéger les routes.Il vérifie que l'utilisateur possède un token JWT
+valide.Quand un utilisateur se connecte :POST /api/auth/login le serveur crée un token JWT.
+const jwt = require("jsonwebtoken");
+
+require("dotenv").config();
+
+
+
+
+module.exports = function auth(req, res, next) {
+
+
+
+
+ // récupérer le header Authorization
+
+ const authHeader = req.headers.authorization;
+
+
+
+
+ // vérifier si le header existe
+
+ if (!authHeader) {
+
+     return res.status(401).json({
+
+      message: "No token provided"
+
+     });
+
+ }
+
+
+
+
+ // le header doit être : Bearer TOKEN
+
+ const parts = authHeader.split(" ");
+
+
+
+
+ if (parts.length !== 2 || parts[0] !== "Bearer") {
+
+     return res.status(401).json({
+
+      message: "Invalid token format"
+
+     });
+
+ }
+
+
+
+
+ const token = parts[1];
+ try {
+
+
+
+
+     // vérifier le token
+
+     const decoded = jwt.verify(
+
+      token,
+
+      process.env.JWT_SECRET
+
+     );
+
+
+
+
+     // ajouter les infos utilisateur dans req.user
+
+     req.user = decoded;
+
+
+
+     // continuer vers la route
+
+     next();
+
+
+
+ } catch (error) {
+
+
+
+
+     return res.status(401).json({
+
+      message: "Invalid token"
+
+     });
+
+
+
+
+ }
+
+
+
+
+};
+
+
+
+d. backend/.env :
+
+Le fichier .env contient les variables d’environnement utilisées par le backend.
+Il permet de séparer la configuration du code.
+
+
+
+
+PORT=5000
+
+
+
+
+DB_HOST=localhost
+
+DB_USER=root
+
+DB_PASSWORD=your_password
+
+DB_NAME=tp_auth
+
+
+
+
+JWT_SECRET=reactNodeMysqlTP
+
+
+
+
+E. backend/index.js :
+
+// 1) Importer les bibliothèques
+
+const express = require("express");
+
+const cors = require("cors");
+
+require("dotenv").config(); // permet de lire le fichier .env
+
+
+
+
+// 2) Importer les routes
+
+const authRoutes = require("./routes/auth"); // /api/auth/...
+
+const userRoutes = require("./routes/users"); // /api/users/...
+
+
+
+
+// 3) Créer l'application Express
+
+const app = express();
+
+
+
+// 4) Middlewares globaux
+
+app.use(cors());      // autoriser les requêtes depuis React (frontend)
+app.use(express.json()); // lire le body JSON envoyé par le frontend
+
+
+
+
+// 5) Route de test (optionnel)
+
+app.get("/", (req, res) => {
+
+ res.send("API running");
+
+});
+
+
+
+
+// 6) Brancher les routes
+
+// Exemple : /api/auth/signup et /api/auth/login
+
+app.use("/api/auth", authRoutes);
+
+
+
+// Exemple : /api/users (GET, PUT, DELETE)
+
+app.use("/api/users", userRoutes);
+
+
+
+
+// 7) Démarrer le serveur
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+
+ console.log("Server running on port", PORT);
+
+});
+
+
+
+
+F. backend/db.js
+
+Il sert à connecter le backend à MySQL :
+
+// Importer mysql2 en mode promise (pour utiliser async/await)
+
+const mysql = require("mysql2/promise");
+
+
+
+
+// Charger les variables d'environnement depuis .env
+require("dotenv").config();
+
+
+
+
+// Créer un pool de connexions (meilleur que createConnection pour une API)
+
+const pool = mysql.createPool({
+
+ host: process.env.DB_HOST,         // ex: localhost
+
+ user: process.env.DB_USER,         // ex: root
+
+ password: process.env.DB_PASSWORD, // ex: 123456
+
+ database: process.env.DB_NAME,         // ex: tp_auth
+
+
+
+
+ waitForConnections: true,        // attendre si toutes les connexions sont occupées
+
+ connectionLimit: 10,          // max 10 connexions en même temps
+
+ queueLimit: 0              // 0 = pas de limite d'attente
+
+});
+
+
+
+// Exporter le pool pour l'utiliser dans les routes
+
+// Exemple : const pool = require("../db"); puis pool.query(...)
+
+module.exports = pool;
+
+
+
+
+ 3. Lancer le Backend
+
+Ouvrir un terminal dans le dossier backend et lancer : npm run dev
+
+4) Création du Frontend React :
+
+ 1. Aller dans le dossier principal et Créer l’application React :
+
+      npm create vite@latest frontend -- --template react
+
+ 2. Entrer dans le dossier frontend et Installer dépendances :
+
+      npm install
+
+      npm install axios react-router-dom
+ 3. Structure React :
+
+
+
+
+3.1. frontend/src/App.jsx :
+
+Le fichier App.jsx est le composant principal de l'application React.
+
+Son rôle est de gérer la navigation entre les pages avec React Router.
+
+Dans ce TP nous avons 3 pages :
+
+
+ Page                             Route                          Description
+
+
+ Login                            /login                         connexion utilisateur
+
+
+ Signup                           /signup                        création d'un compte
+
+
+ Dashboard                        /dashboard                     afficher / modifier /
+                                                                 supprimer utilisateurs
+
+
+// Importer React Router
+
+import { Routes, Route } from "react-router-dom";
+
+
+
+
+// Importer les pages
+
+import Login from "./pages/Login";
+
+import Signup from "./pages/Signup";
+
+import Dashboard from "./pages/Dashboard";
+// Composant principal de l'application
+
+function App() {
+
+
+
+
+    return (
+
+
+
+
+     // Routes de l'application
+
+     <Routes>
+
+
+
+
+         {/* Page Login */}
+
+         <Route path="/login" element={<Login />} />
+
+
+
+         {/* Page Signup */}
+
+         <Route path="/signup" element={<Signup />} />
+
+
+
+
+         {/* Page Dashboard */}
+
+         <Route path="/dashboard" element={<Dashboard />} />
+
+
+
+
+     </Routes>
+
+
+
+    );
+
+
+
+
+}
+
+
+
+
+// Exporter le composant
+
+export default App;
+3.2. frontend/src/api.js :
+
+Le fichier api.js sert à configurer Axios pour communiquer avec le backend.
+
+Il permet de :
+
+ définir l’URL du backend
+ envoyer les requêtes HTTP (GET, POST, PUT, DELETE)
+ ajouter automatiquement le token JWT dans les requêtes
+
+Ainsi, toutes les pages React peuvent utiliser :
+
+      api.get()
+      api.post()
+      api.put()
+      api.delete()
+
+au lieu de réécrire toute la configuration.
+
+// importer axios
+
+import axios from "axios";
+
+
+
+
+// créer une instance axios
+
+export const api = axios.create({
+
+
+
+
+ // URL du backend
+
+ baseURL: "http://localhost:5000/api"
+
+
+
+
+});
+
+
+
+
+// ajouter automatiquement le token JWT
+
+api.interceptors.request.use((config) => {
+
+
+
+
+ // récupérer le token dans localStorage
+ const token = localStorage.getItem("token");
+
+
+
+
+ // si le token existe
+
+ if (token) {
+
+
+
+
+      // ajouter le header Authorization
+
+      config.headers.Authorization = `Bearer ${token}`;
+
+
+
+
+ }
+
+
+
+
+ return config;
+
+
+
+
+});
+
+3.3 Login.jsx :
+
+Le fichier Login.jsx contient le formulaire de connexion.
+
+Il permet à l'utilisateur de saisir :
+
+        email
+        password
+
+Puis d'envoyer ces données au backend : POST /api/auth/login
+
+import { useState } from "react";
+
+import { api } from "../api";
+
+import { useNavigate } from "react-router-dom";
+
+
+
+
+function Login() {
+
+
+
+
+ // stocker email et password
+const [email, setEmail] = useState("");
+
+const [password, setPassword] = useState("");
+
+
+
+
+const navigate = useNavigate();
+
+
+
+
+// fonction login
+
+const handleLogin = async (e) => {
+
+
+
+
+ e.preventDefault();
+
+
+
+
+ try {
+
+
+
+
+  const response = await api.post("/auth/login", {
+
+   email,
+
+   password
+
+  });
+
+
+
+
+  // récupérer token
+
+  const token = response.data.token;
+
+
+
+
+  // sauvegarder token
+
+  localStorage.setItem("token", token);
+
+
+
+
+  // redirection vers dashboard
+
+  navigate("/dashboard");
+ } catch (error) {
+
+
+
+
+     alert("Login failed");
+
+
+
+
+ }
+
+
+
+};
+
+
+
+
+return (
+
+
+
+
+ <div>
+
+
+
+
+     <h2>Login</h2>
+
+
+
+     <form onSubmit={handleLogin}>
+
+
+
+
+      <input
+
+       type="email"
+
+       placeholder="Email"
+
+       value={email}
+
+       onChange={(e) => setEmail(e.target.value)}
+
+      />
+
+
+
+
+      <br /><br />
+
+
+
+
+      <input
+          type="password"
+
+          placeholder="Password"
+
+          value={password}
+
+          onChange={(e) => setPassword(e.target.value)}
+
+         />
+
+
+
+
+         <br /><br />
+
+
+
+
+         <button type="submit">
+
+          Login
+
+         </button>
+
+
+
+
+         </form>
+
+
+
+     </div>
+
+
+
+
+    );
+
+
+
+
+}
+
+
+
+
+export default Login;
+
+3.4. Signup.jsx :
+
+Le fichier Signup.jsx contient le formulaire de création de compte.
+
+L'utilisateur doit saisir :
+
+         name
+         email
+         password
+Ces données sont envoyées au backend : POST /api/auth/signup
+
+import { useState } from "react";
+
+import { api } from "../api";
+
+import { useNavigate } from "react-router-dom";
+
+
+
+
+function Signup() {
+
+
+
+
+ // états pour stocker les champs
+
+ const [name, setName] = useState("");
+
+ const [email, setEmail] = useState("");
+
+ const [password, setPassword] = useState("");
+
+
+
+
+ const navigate = useNavigate();
+
+
+
+ // fonction signup
+
+ const handleSignup = async (e) => {
+
+
+
+
+  e.preventDefault();
+
+
+
+
+  try {
+
+
+
+
+   // envoyer les données au backend
+
+   await api.post("/auth/signup", {
+
+    name,
+
+    email,
+
+    password
+     });
+
+
+
+
+     alert("Account created successfully");
+
+
+
+
+     // redirection vers login
+
+     navigate("/login");
+
+
+
+
+ } catch (error) {
+
+
+
+
+     alert("Signup failed");
+
+
+
+ }
+
+
+
+
+};
+
+
+
+
+return (
+
+
+
+
+ <div>
+
+
+
+     <h2>Signup</h2>
+
+
+
+
+     <form onSubmit={handleSignup}>
+
+
+
+
+      <input
+
+           type="text"
+
+           placeholder="Name"
+ value={name}
+
+ onChange={(e) => setName(e.target.value)}
+
+/>
+
+
+
+
+<br /><br />
+
+
+
+
+<input
+
+ type="email"
+
+ placeholder="Email"
+
+ value={email}
+
+ onChange={(e) => setEmail(e.target.value)}
+
+/>
+
+
+
+
+<br /><br />
+
+
+
+
+<input
+
+ type="password"
+
+ placeholder="Password"
+
+ value={password}
+
+ onChange={(e) => setPassword(e.target.value)}
+
+/>
+
+
+
+
+<br /><br />
+
+
+
+<button type="submit">
+
+ Create account
+         </button>
+
+
+
+
+         </form>
+
+
+
+
+     </div>
+
+
+
+    );
+
+
+
+
+}
+
+
+
+
+export default Signup;
+
+3.5. Dashboard.jsx permet :
+
+         d’afficher les informations des utilisateurs
+         de modifier un utilisateur
+         de supprimer un utilisateur
+
+Les données sont récupérées depuis le backend : GET /api/users
+
+Chaque utilisateur aura :
+
+         name
+         email
+         age
+         cin
+
+et deux boutons :
+
+         Edit → modifier utilisateur
+         Delete → supprimer utilisateur
+
+import { useEffect, useState } from "react";
+
+import { api } from "../api";
+
+
+
+
+function Dashboard() {
+const [users, setUsers] = useState([]);
+
+
+
+
+// récupérer utilisateurs
+
+const loadUsers = async () => {
+
+
+
+
+ const response = await api.get("/users");
+
+
+
+
+ setUsers(response.data);
+
+
+
+
+};
+
+
+
+// charger les utilisateurs au démarrage
+
+useEffect(() => {
+
+
+
+ loadUsers();
+
+
+
+
+}, []);
+
+
+
+
+// supprimer utilisateur
+
+const deleteUser = async (id) => {
+
+
+
+
+ await api.delete(`/users/${id}`);
+
+
+
+
+ loadUsers();
+
+
+
+
+};
+// modifier utilisateur (simple exemple)
+
+const editUser = async (user) => {
+
+
+
+
+ const newName = prompt("New name:", user.name);
+
+
+
+
+ if (!newName) return;
+
+
+
+
+ await api.put(`/users/${user.id}`, {
+
+     name: newName,
+
+     email: user.email
+
+ });
+
+
+
+
+ loadUsers();
+
+
+
+
+};
+
+
+
+
+return (
+
+
+
+ <div>
+
+
+
+
+     <h2>Users Dashboard</h2>
+
+
+
+
+     <table border="1">
+
+
+
+
+       <thead>
+<tr>
+
+
+
+
+ <th>Name</th>
+
+ <th>Email</th>
+
+ <th>Actions</th>
+
+
+
+
+</tr>
+
+
+
+
+</thead>
+
+
+
+
+<tbody>
+
+
+
+
+{users.map((user) => (
+
+
+
+
+ <tr key={user.id}>
+
+
+
+
+  <td>{user.name}</td>
+
+
+
+
+  <td>{user.email}</td>
+
+
+
+
+  <td>
+
+
+
+
+   <button onClick={() => editUser(user)}>
+
+       Edit
+
+   </button>
+                <button onClick={() => deleteUser(user.id)}>
+
+                 Delete
+
+                </button>
+
+
+
+
+            </td>
+
+
+
+
+           </tr>
+
+
+
+
+          ))}
+
+
+
+         </tbody>
+
+
+
+
+         </table>
+
+
+
+
+     </div>
+
+
+
+
+    );
+
+
+
+}
+
+
+
+
+export default Dashboard;
+
+
+
+
+    4. Lancer le Frontend:
+
+Ouvrir un deuxième terminal dans le dossier frontend et lancer : npm run dev
+5) Ouvrir l’application
+
+Dans le terminal React, un lien apparaît : http://localhost:5173
+
